@@ -101,9 +101,10 @@ class Seq2SeqSemanticParser(object):
             c = c.unsqueeze(0)
             while True:
                 emb = self.dec_emb(torch.LongTensor([[start]]))
-                cell_out, (h,c) = self.dec(emb,h,c)
+                cell_out, (h,c) = self.dec(emb,h,c,enc_out.squeeze()[:len(ex.x_indexed),:])
                 start = torch.argmax(cell_out)
-                p += torch.max(nn.functional.log_softmax(cell_out))
+                #print(output_indexer.get_object(start.item()))
+                p += torch.max(F.log_softmax(cell_out,dim=1))
                 if start.item() == output_indexer.index_of(EOS_SYMBOL):
                     break
                 tmp.append(start.item())
@@ -222,7 +223,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
     dataset_loader = prep_data(train_data, test_data, input_indexer, output_indexer)
     
     enc_embed_size = 300
-    dropout_ratio = 0.2
+    dropout_ratio = 0.0
     enc_hidden_size = 500
     dec_embed_size = 300
     dec_hidden_size = enc_hidden_size
@@ -230,7 +231,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
     encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
     encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
     decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
-    decoder = RNNDecoder(dec_embed_size, dec_hidden_size, len(output_indexer))
+    decoder = RNNDecoderAttention(dec_embed_size, dec_hidden_size, len(output_indexer))
 
 
     LR = 0.001
@@ -241,7 +242,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
                               lr=LR)
 
     teacher_forcing = True
-    NUM_EPOCHS = 10
+    NUM_EPOCHS = 40
     loss_fn = torch.nn.CrossEntropyLoss()
     for k in range(NUM_EPOCHS):
         loss_epoch = []
@@ -264,7 +265,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
                 start = decoder_embedding(torch.LongTensor([[output_indexer.index_of(SOS_SYMBOL)]]))
                 (h1,c1) = (h[i].unsqueeze(0).unsqueeze(0), c[i].unsqueeze(0).unsqueeze(0))
                 for j in range(batch[2][i]):
-                    cell_out, (h1,c1) = decoder(start,h1,c1)
+                    cell_out, (h1,c1) = decoder(start,h1,c1,encoder_out[:batch[0][i],i,:])
                     ind = torch.argmax(cell_out)
                     if teacher_forcing:
                         ind = batch[3][i][j]
@@ -327,6 +328,6 @@ if __name__ == '__main__':
         decoder = train_model_encdec(train_data_indexed, dev_data_indexed, input_indexer, output_indexer, args)
         evaluate(dev_data_indexed, decoder)
     print("=======FINAL EVALUATION ON BLIND TEST=======")
-    evaluate(test_data_indexed, decoder, print_output=True, outfile="geo_test_output.tsv")
+    #evaluate(test_data_indexed, decoder, print_output=False, outfile="geo_test_output.tsv")
 
 
