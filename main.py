@@ -92,15 +92,15 @@ class Seq2SeqSemanticParser(object):
         ans =  []
         for ex in test_data:
             tmp  = []
-            embedded = self.enc_emb(torch.LongTensor(ex.x_indexed).unsqueeze(0))
-            x = torch.LongTensor([len(ex.x_indexed)])
+            embedded = self.enc_emb(torch.LongTensor(ex.x_indexed).unsqueeze(0).cuda())
+            x = torch.LongTensor([len(ex.x_indexed)]).cuda()
             enc_out,(h,c) = self.enc(embedded, x)
             start = output_indexer.index_of(SOS_SYMBOL)
             p = 0
             h = h.unsqueeze(0)
             c = c.unsqueeze(0)
             while True:
-                emb = self.dec_emb(torch.LongTensor([[start]]))
+                emb = self.dec_emb(torch.LongTensor([[start]]).cuda())
                 cell_out, (h,c) = self.dec(emb,h,c)
                 start = torch.argmax(cell_out)
                 p += torch.max(nn.functional.log_softmax(cell_out))
@@ -108,7 +108,7 @@ class Seq2SeqSemanticParser(object):
                     break
                 tmp.append(start.item())
                 
-            ans.append([Derivation(ex,np.exp(p.detach()), list(map(lambda x: self.out_ind.get_object(x),tmp)))])
+            ans.append([Derivation(ex,np.exp(p.cpu().detach()), list(map(lambda x: self.out_ind.get_object(x),tmp)))])
         return ans    
 
 def make_padded_input_tensor(exs: List[Example], input_indexer: Indexer, max_len: int, reverse_input=False) -> np.ndarray:
@@ -238,10 +238,10 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
                               {'params':decoder_embedding.parameters()},
                               {'params':decoder.parameters()},
                               {'params':encoder_embedding.parameters()}],
-                              lr=LR).cuda()
+                              lr=LR)
 
     teacher_forcing = True
-    NUM_EPOCHS = 10
+    NUM_EPOCHS = 50
     loss_fn = torch.nn.CrossEntropyLoss().cuda()
     for k in range(NUM_EPOCHS):
         loss_epoch = []
@@ -262,7 +262,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
             #print("enc output shape", encoder_out.shape)
             #print("h enc shape", h.shape)
             for i in range(encoder_out.shape[1]):
-                start = decoder_embedding(torch.LongTensor([[output_indexer.index_of(SOS_SYMBOL)]]))
+                start = decoder_embedding(torch.LongTensor([[output_indexer.index_of(SOS_SYMBOL)]]).cuda())
                 (h1,c1) = (h[i].unsqueeze(0).unsqueeze(0), c[i].unsqueeze(0).unsqueeze(0))
                 for j in range(batch[2][i]):
                     cell_out, (h1,c1) = decoder(start,h1,c1)
