@@ -227,10 +227,10 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
     dec_embed_size = 300
     dec_hidden_size = enc_hidden_size
 
-    encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
-    encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
-    decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
-    decoder = RNNDecoder(dec_embed_size, dec_hidden_size, len(output_indexer))
+    encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio).cuda()
+    encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False).cuda()
+    decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio).cuda()
+    decoder = RNNDecoder(dec_embed_size, dec_hidden_size, len(output_indexer)).cuda()
 
 
     LR = 0.001
@@ -238,11 +238,11 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
                               {'params':decoder_embedding.parameters()},
                               {'params':decoder.parameters()},
                               {'params':encoder_embedding.parameters()}],
-                              lr=LR)
+                              lr=LR).cuda()
 
     teacher_forcing = True
     NUM_EPOCHS = 10
-    loss_fn = torch.nn.CrossEntropyLoss()
+    loss_fn = torch.nn.CrossEntropyLoss().cuda()
     for k in range(NUM_EPOCHS):
         loss_epoch = []
         encoder_embedding.train()
@@ -250,6 +250,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
         decoder_embedding.train()
         decoder.train()
         for batch in dataset_loader:
+            batch = list(map(lambda x: x.cuda(), batch))
             optimizer.zero_grad()
             loss_batch = 0
             embedded_input = encoder_embedding(batch[1])
