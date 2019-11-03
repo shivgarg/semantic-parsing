@@ -3,9 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 from torch.autograd import Variable as Var
-
 import numpy as np
-
 ###################################################################################################################
 # You do not have to use any of the classes in this file, but they're meant to give you a starting implementation.
 # for your network.
@@ -90,7 +88,7 @@ class RNNEncoder(nn.Module):
         the final states h and c from the encoder for each sentence.
         """
         # Takes the embedded sentences, "packs" them into an efficient Pytorch-internal representation
-        packed_embedding = nn.utils.rnn.pack_padded_sequence(embedded_words, input_lens, batch_first=True)
+        packed_embedding = nn.utils.rnn.pack_padded_sequence(embedded_words, input_lens, batch_first=True, enforce_sorted=False)
         # Runs the RNN over each sequence. Returns output at each position as well as the last vectors of the RNN
         # state for each sentence (first/last vectors for bidirectional)
         output, hn = self.rnn(packed_embedding)
@@ -114,4 +112,56 @@ class RNNEncoder(nn.Module):
         else:
             h, c = hn[0][0], hn[1][0]
             h_t = (h, c)
-        return (output, context_mask, h_t)
+        return (output, h_t)
+
+class RNNDecoder(nn.Module):
+    """
+    One-layer RNN encoder for batched inputs -- handles multiple sentences at once. To use in non-batched mode, call it
+    with a leading dimension of 1 (i.e., use batch size 1)
+    """
+    def __init__(self, input_size: int, hidden_size: int, num_output: int):
+        """
+        :param input_size: size of word embeddings output by embedding layer
+        :param hidden_size: hidden size for the LSTM
+        :param bidirect: True if bidirectional, false otherwise
+        """
+        super(RNNDecoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.fc = nn.Linear(hidden_size, num_output, bias=True)
+        
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True,
+                               dropout=0., bidirectional=False)
+        
+
+    def sent_lens_to_mask(self, lens, max_length):
+        return torch.from_numpy(np.asarray([[1 if j < lens.data[i].item() else 0 for j in range(0, max_length)] for i in range(0, lens.shape[0])]))
+
+    def forward(self, word, h, c):
+        """
+        Runs the forward pass of the LSTM
+        :param embedded_words: [batch size x sent len x input dim] tensor
+        :param input_lens: [batch size]-length vector containing the length of each input sentence
+        :return: output (each word's representation), context_mask (a mask of 0s and 1s
+        reflecting where the model's output should be considered), and h_t, a *tuple* containing
+        the final states h and c from the encoder for each sentence.
+        """
+        ## Takes the embedded sentences, "packs" them into an efficient Pytorch-internal representation
+        #packed_embedding = nn.utils.rnn.pack_padded_sequence(embedded_words, input_lens, batch_first=True)
+        ## Runs the RNN over each sequence. Returns output at each position as well as the last vectors of the RNN
+        ## state for each sentence (first/last vectors for bidirectional)
+        #output, hn = self.rnn(packed_embedding)
+        ## Unpacks the Pytorch representation into normal tensors
+        #output, sent_lens = nn.utils.rnn.pad_packed_sequence(output)
+        #max_length = input_lens.data[0].item()
+        #context_mask = self.sent_lens_to_mask(sent_lens, max_length)
+        #output = self.fc(output)
+        ## Grabs the encoded representations out of hn, which is a weird tuple thing.
+        ## Note: if you want multiple LSTM layers, you'll need to change this to consult the penultimate layer
+        ## or gather representations from all layers.
+        #return (output, context_mask)
+
+        lstm_output, (h,c) = self.rnn(word,(h,c))
+        cell_out = self.fc(lstm_output.squeeze(0))
+        return cell_out, (h,c)
+
