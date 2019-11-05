@@ -101,9 +101,8 @@ class Seq2SeqSemanticParser(object):
             c = c.unsqueeze(0)
             while True:
                 emb = self.dec_emb(torch.LongTensor([[start]]))
-                cell_out, (h,c) = self.dec(emb,h,c,enc_out.squeeze()[:len(ex.x_indexed),:])
+                cell_out, _, (h,c) = self.dec(emb,h,c,torch.LongTensor([1]),enc_out[:len(ex.x_indexed),:])
                 start = torch.argmax(cell_out)
-                #print(output_indexer.get_object(start.item()))
                 p += torch.max(F.log_softmax(cell_out,dim=1))
                 if start.item() == output_indexer.index_of(EOS_SYMBOL):
                     break
@@ -141,6 +140,16 @@ def make_padded_output_tensor(exs, output_indexer, max_len):
     :return: A [num example, max_len]-size array of indices of the output tokens
     """
     return np.array([[ex.y_indexed[i] if i < len(ex.y_indexed) else output_indexer.index_of(PAD_SYMBOL) for i in range(0, max_len)] for ex in exs])
+
+def make_padded_output_inp_tensor(exs, output_indexer, max_len):
+    """
+    Similar to make_padded_input_tensor, but does it on the outputs without the option to reverse input
+    :param exs:
+    :param output_indexer:
+    :param max_len:
+    :return: A [num example, max_len]-size array of indices of the output tokens
+    """
+    return np.array([[ex.y_indexed_inp[i] if i < len(ex.y_indexed_inp) else output_indexer.index_of(PAD_SYMBOL) for i in range(0, max_len)] for ex in exs])
 
 
 def encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb: EmbeddingLayer, model_enc: RNNEncoder):
@@ -184,7 +193,8 @@ def prep_data(train_data: List[Example], test_data: List[Example], input_indexer
     output_max_len = np.max(output_len)
     all_train_output_data = make_padded_output_tensor(train_data, output_indexer, output_max_len)
     all_test_output_data = make_padded_output_tensor(test_data, output_indexer, output_max_len)
-
+    all_train_output_inp_data = make_padded_output_inp_tensor(train_data, output_indexer, output_max_len)
+    
     print("Train length: %i" % input_max_len)
     print("Train output length: %i" % np.max(np.asarray([len(ex.y_indexed) for ex in train_data])))
     print("Train matrix: %s; shape = %s" % (all_train_input_data, all_train_input_data.shape))
@@ -195,11 +205,14 @@ def prep_data(train_data: List[Example], test_data: List[Example], input_indexer
     all_train_input_data = torch.LongTensor(all_train_input_data)
     output_len = torch.LongTensor(output_len)
     all_train_output_data = torch.LongTensor(all_train_output_data)
+    all_train_output_inp_data = torch.LongTensor(all_train_output_inp_data)
+    
     input_len.requires_grad_(False)
     all_train_input_data.requires_grad_(False)
     output_len.requires_grad_(False)
     all_train_output_data.requires_grad_(False)
-    dataset = torch.utils.data.TensorDataset(input_len, all_train_input_data, output_len, all_train_output_data)
+    all_train_output_inp_data.requires_grad_(False)
+    dataset = torch.utils.data.TensorDataset(input_len, all_train_input_data, output_len, all_train_output_data, all_train_output_inp_data)
     dataset_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     
     return dataset_loader
@@ -231,7 +244,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
     encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
     encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
     decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
-    decoder = RNNDecoderAttention(dec_embed_size, dec_hidden_size, len(output_indexer))
+    decoder = RNNDecoder(dec_embed_size, dec_hidden_size, len(output_indexer))
 
 
     LR = 0.001
@@ -250,32 +263,77 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
         encoder.train()
         decoder_embedding.train()
         decoder.train()
+        
+        t1 = time.time()
         for batch in dataset_loader:
             optimizer.zero_grad()
             loss_batch = 0
             embedded_input = encoder_embedding(batch[1])
-            embedded_output = decoder_embedding(batch[3])
-            #print("emb out",embedded_input.shape)
-            #print("lens shape", batch[0].shape)
-            #print(batch[0])
             encoder_out, (h,c) = encoder(embedded_input, batch[0])
-            #print("enc output shape", encoder_out.shape)
-            #print("h enc shape", h.shape)
             for i in range(encoder_out.shape[1]):
                 start = decoder_embedding(torch.LongTensor([[output_indexer.index_of(SOS_SYMBOL)]]))
                 (h1,c1) = (h[i].unsqueeze(0).unsqueeze(0), c[i].unsqueeze(0).unsqueeze(0))
                 for j in range(batch[2][i]):
-                    cell_out, (h1,c1) = decoder(start,h1,c1,encoder_out[:batch[0][i],i,:])
+                    cell_out, _,(h1,c1) = decoder(start,h1,c1,1,encoder_out[:batch[0][i],i,:])
                     ind = torch.argmax(cell_out)
                     if teacher_forcing:
                         ind = batch[3][i][j]
                     start = decoder_embedding(ind.unsqueeze(0).unsqueeze(0))
-                    #print(batch[3][i][j].unsqueeze(0).shape)
                     loss_batch += loss_fn(cell_out, batch[3][i][j].unsqueeze(0).detach())
-                    #print(torch.argmax(cell_out))
             loss_epoch.append(loss_batch)
             loss_batch.backward()
             optimizer.step()
+        print("Time:",time.time()-t1)
+        print("Epoch {}:{}".format(k,sum(loss_epoch)/len(loss_epoch)))
+        loss_epoch = []
+    return Seq2SeqSemanticParser(encoder_embedding,encoder,input_indexer,decoder_embedding, decoder, output_indexer)
+
+
+def train_model_encdec_fast(train_data: List[Example], test_data: List[Example], input_indexer, output_indexer, args) -> Seq2SeqSemanticParser:
+    dataset_loader = prep_data(train_data, test_data, input_indexer, output_indexer)
+    
+    enc_embed_size = 300
+    dropout_ratio = 0.0
+    enc_hidden_size = 500
+    dec_embed_size = 300
+    dec_hidden_size = enc_hidden_size
+
+    encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
+    encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
+    decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
+    decoder = RNNDecoderFast(dec_embed_size, dec_hidden_size, len(output_indexer))
+
+
+    LR = 0.001
+    optimizer = torch.optim.Adam([{'params':encoder.parameters()},
+                              {'params':decoder_embedding.parameters()},
+                              {'params':decoder.parameters()},
+                              {'params':encoder_embedding.parameters()}],
+                              lr=LR)
+
+    NUM_EPOCHS = 10
+    for k in range(NUM_EPOCHS):
+        loss_epoch = []
+        encoder_embedding.train()
+        encoder.train()
+        decoder_embedding.train()
+        decoder.train()
+
+        t1 = time.time()
+        for batch in dataset_loader:
+            optimizer.zero_grad()
+            embedded_input = encoder_embedding(batch[1])
+            encoder_out, (h,c) = encoder(embedded_input, batch[0])
+            decoded_embed = decoder_embedding(batch[4])
+            (h1,c1) = (h.unsqueeze(0), c.unsqueeze(0))
+            cell_out, mask, _ = decoder(decoded_embed,h1,c1,batch[2],encoder_out)
+            one_hot = F.one_hot(batch[3],len(output_indexer))[:,:torch.max(batch[2]),:].permute([1,0,2])
+            loss_batch = -1*torch.sum(F.log_softmax(cell_out,dim=2)*one_hot.float().detach(),dim=2)
+            loss_batch = torch.sum(loss_batch*(mask.permute([1,0]).float().detach()))
+            loss_epoch.append(loss_batch)
+            loss_batch.backward()
+            optimizer.step()
+        print("Time:", time.time()-t1)
         print("Epoch {}:{}".format(k,sum(loss_epoch)/len(loss_epoch)))
         loss_epoch = []
     return Seq2SeqSemanticParser(encoder_embedding,encoder,input_indexer,decoder_embedding, decoder, output_indexer)

@@ -35,13 +35,6 @@ class EmbeddingLayer(nn.Module):
         return final_embeddings
 
 
-class AttentionDot(nn.Module):
-    def __init__(self):
-        super(AttentionDot,self).__init__()
-    
-    def forward(self, vec1, vec2):
-        return  torch.bmm(vec1, vec2)
-
 class RNNEncoder(nn.Module):
     """
     One-layer RNN encoder for batched inputs -- handles multiple sentences at once. To use in non-batched mode, call it
@@ -121,6 +114,64 @@ class RNNEncoder(nn.Module):
             h_t = (h, c)
         return (output, h_t)
 
+
+class AttentionDot(nn.Module):
+    def __init__(self):
+        super(AttentionDot,self).__init__()
+    
+    def forward(self, vec1, vec2):
+        return  torch.bmm(vec1, vec2)
+
+
+class RNNDecoderFast(nn.Module):
+    def __init__(self, input_size: int, hidden_size: int, num_output: int):
+        super(RNNDecoderFast, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.fc = nn.Linear(hidden_size, num_output, bias=True)    
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True,
+                               dropout=0., bidirectional=False)
+
+    def sent_lens_to_mask(self, lens, max_length):
+        return torch.from_numpy(np.asarray([[1 if j < lens.data[i].item() else 0 for j in range(0, max_length)] for i in range(0, lens.shape[0])]))
+
+    def forward(self, word, h, c, input_lens, encoder):
+        packed_embedding = nn.utils.rnn.pack_padded_sequence(word, input_lens, batch_first=True, enforce_sorted=False)
+        output, (h,c) = self.rnn(packed_embedding,(h,c))
+        output, sent_lens = nn.utils.rnn.pad_packed_sequence(output)
+        max_length = torch.max(input_lens)
+        context_mask = self.sent_lens_to_mask(sent_lens, max_length)
+        cell_out = self.fc(output.squeeze(0))
+        return cell_out, context_mask, (h,c)
+
+class RNNDecoderAttentionFast(nn.Module):
+    def __init__(self, input_size: int, hidden_size: int, num_output: int):
+        super(RNNDecoderAttentionFast, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.fc = nn.Linear(2*hidden_size, num_output, bias=True)
+        self.attn = AttentionDot()
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True,
+                               dropout=0., bidirectional=False)
+        
+
+    def sent_lens_to_mask(self, lens, max_length):
+        return torch.from_numpy(np.asarray([[1 if j < lens.data[i].item() else 0 for j in range(0, max_length)] for i in range(0, lens.shape[0])]))
+
+    def forward(self, word, h, c, input_lens, enc_outputs):
+        packed_embedding = nn.utils.rnn.pack_padded_sequence(word, input_lens, batch_first=True, enforce_sorted=False)
+        output, (h,c) = self.rnn(packed_embedding,(h,c))
+        output, sent_lens = nn.utils.rnn.pad_packed_sequence(output)
+        max_length = torch.max(input_lens)
+        context_mask = self.sent_lens_to_mask(sent_lens, max_length)
+        ratios = self.attn(enc_outputs.permute([1,0,2]), output.permute([1,2,0]))
+        prob = F.softmax(ratios, dim=1)
+        attended = torch.bmm(prob.permute([0,2,1]),enc_outputs.permute([1,0,2]))
+        concat = torch.cat([output.permute([1,0,2]), attended],dim=2)
+        cell_out = self.fc(concat)
+        return cell_out.permute([1,0,2]), context_mask, (h,c)
+
+
 class RNNDecoder(nn.Module):
     def __init__(self, input_size: int, hidden_size: int, num_output: int):
         super(RNNDecoder, self).__init__()
@@ -135,10 +186,10 @@ class RNNDecoder(nn.Module):
     def sent_lens_to_mask(self, lens, max_length):
         return torch.from_numpy(np.asarray([[1 if j < lens.data[i].item() else 0 for j in range(0, max_length)] for i in range(0, lens.shape[0])]))
 
-    def forward(self, word, h, c, encoder):
+    def forward(self, word, h, c, input_lens, encoder):
         lstm_output, (h,c) = self.rnn(word,(h,c))
         cell_out = self.fc(lstm_output.squeeze(0))
-        return cell_out, (h,c)
+        return cell_out, [], (h,c)
 
 class RNNDecoderAttention(nn.Module):
     def __init__(self, input_size: int, hidden_size: int, num_output: int):
@@ -154,11 +205,11 @@ class RNNDecoderAttention(nn.Module):
     def sent_lens_to_mask(self, lens, max_length):
         return torch.from_numpy(np.asarray([[1 if j < lens.data[i].item() else 0 for j in range(0, max_length)] for i in range(0, lens.shape[0])]))
 
-    def forward(self, word, h, c, enc_outputs):
+    def forward(self, word, h, c, input_lens, enc_outputs):
         lstm_output, (h,c) = self.rnn(word,(h,c))
         ratios = self.attn(enc_outputs.unsqueeze(0), lstm_output.permute([0,2,1]))
         prob = F.softmax(ratios, dim=1)
         attended = torch.matmul(enc_outputs.permute([1,0]),prob).permute([0,2,1])
         concat = torch.cat([lstm_output, attended],dim=2).squeeze(0)
         cell_out = self.fc(concat)
-        return cell_out, (h,c)
+        return cell_out, [], (h,c)

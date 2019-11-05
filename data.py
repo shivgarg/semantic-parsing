@@ -15,13 +15,14 @@ class Example(object):
         y_tok: tokenized logical form, a list of strings
         y_indexed: indexed logical form, a list of ints
     """
-    def __init__(self, x: str, x_tok: List[str], x_indexed: List[int], y, y_tok, y_indexed):
+    def __init__(self, x: str, x_tok: List[str], x_indexed: List[int], y, y_tok, y_indexed, y_indexed_inp=[]):
         self.x = x
         self.x_tok = x_tok
         self.x_indexed = x_indexed
         self.y = y
         self.y_tok = y_tok
         self.y_indexed = y_indexed
+        self.y_indexed_inp = y_indexed_inp
 
     def __repr__(self):
         return " ".join(self.x_tok) + " => " + " ".join(self.y_tok) + "\n   indexed as: " + repr(self.x_indexed) + " => " + repr(self.y_indexed)
@@ -119,7 +120,8 @@ def index_data(data, input_indexer: Indexer, output_indexer: Indexer, example_le
         x_tok = tokenize(x)
         y_tok = tokenize(y)[0:example_len_limit]
         data_indexed.append(Example(x, x_tok, index(x_tok, input_indexer), y, y_tok,
-                                          index(y_tok, output_indexer) + [output_indexer.index_of(EOS_SYMBOL)]))
+                                          index(y_tok, output_indexer) + [output_indexer.index_of(EOS_SYMBOL)],
+                                          [output_indexer.index_of(SOS_SYMBOL)] + index(y_tok, output_indexer)))
     return data_indexed
 
 
