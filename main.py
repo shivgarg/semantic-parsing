@@ -109,7 +109,45 @@ class Seq2SeqSemanticParser(object):
                 tmp.append(start.item())
                 
             ans.append([Derivation(ex,np.exp(p.detach()), list(map(lambda x: self.out_ind.get_object(x),tmp)))])
-        return ans    
+        return ans        
+
+    def decode_beam(self, test_data: List[Example]) -> List[List[Derivation]]:
+        ans =  []
+        for ex in test_data:
+            embedded = self.enc_emb(torch.LongTensor(ex.x_indexed).unsqueeze(0))
+            x = torch.LongTensor([len(ex.x_indexed)])
+            enc_out,(h,c) = self.enc(embedded, x)
+            # [["indexed words"],(h,c)]
+            beam = Beam(2)
+            beam.add([[SOS_SYMBOL],(h.unsqueeze(0),c.unsqueeze(0))],0)
+            while True:
+                tmp = Beam(2)
+                changed = False
+                cur_beam = beam.get_elts_and_scores()
+                for (ele, score) in cur_beam:
+                    if ele[0][-1] == EOS_SYMBOL:
+                        tmp.add(ele,score)
+                    else:
+                        changed = True
+                        emb = self.dec_emb(torch.LongTensor([[self.out_ind.index_of(ele[0][-1])]]))
+                        h = ele[1][0]
+                        c = ele[1][1]
+                        cell_out, (h,c) = self.dec(emb,h,c,enc_out.squeeze()[:len(ex.x_indexed),:])
+                        val = torch.topk(F.log_softmax(cell_out,dim=1).squeeze(),20)
+                        for i in range(20):
+                            decoded = ele[0]+[self.out_ind.get_object(val.indices[i].item())]
+                            h1 = h.clone().detach()
+                            c1 = c.clone().detach()
+                            tmp.add([decoded,(h1,c1)],(score*len(ele[0])+val.values[i].item())/(len(ele[0])+1))
+                if not changed:
+                    break
+                beam = tmp
+            cur_ex_ans = []
+            top20 = beam.get_elts_and_scores()
+            for (ele, score) in top20:
+                cur_ex_ans.append(Derivation(ex, np.exp(score),ele[0][1:-1]))
+            ans.append(cur_ex_ans)
+        return ans
 
 def make_padded_input_tensor(exs: List[Example], input_indexer: Indexer, max_len: int, reverse_input=False) -> np.ndarray:
     """
