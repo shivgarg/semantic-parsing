@@ -168,7 +168,7 @@ def index_datasets(train_data, dev_data, test_data, example_len_limit, unk_thres
 ##################################################
 # YOU SHOULD NOT NEED TO LOOK AT THESE FUNCTIONS #
 ##################################################
-def print_evaluation_results(test_data, selected_derivs, denotation_correct, example_freq=50, print_output=True):
+def print_evaluation_results(test_data, selected_derivs, denotation_correct, example_freq=20, print_output=True):
     """
     Prints output and accuracy. YOU SHOULD NOT NEED TO CALL THIS DIRECTLY -- instead call evaluate in main.py, which
     wraps this.

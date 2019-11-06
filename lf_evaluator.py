@@ -109,7 +109,7 @@ class GeoqueryDomain(object):
     def is_error(self, d):
         return 'FAILED' in d or 'Join failed syntactically' in d
 
-    def compare_answers(self, true_answers, all_derivs, quiet=False):
+    def compare_answers(self, true_answers, all_derivs, quiet=True):
         all_lfs = ([self.format_lf(s) for s in true_answers] +
                 [self.format_lf(' '.join(d.y_toks))
                 for x in all_derivs for d in x])

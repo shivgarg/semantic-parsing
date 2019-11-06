@@ -1,0 +1,13 @@
+\begin{thebibliography}{2}
+\expandafter\ifx\csname natexlab\endcsname\relax\def\natexlab#1{#1}\fi
+
+\bibitem[{Luong et~al.(2015)Luong, Pham, and Manning}]{luong2015effective}
+Minh-Thang Luong, Hieu Pham, and Christopher~D Manning. 2015.
+\newblock Effective approaches to attention-based neural machine translation.
+\newblock \emph{arXiv preprint arXiv:1508.04025}.
+
+\bibitem[{Zelle()}]{zelle1996learning}
+John~M Zelle.
+\newblock Learning to parse database queries using inductive logic programming.
+
+\end{thebibliography}

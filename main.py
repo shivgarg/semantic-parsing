@@ -118,27 +118,27 @@ class Seq2SeqSemanticParser(object):
             x = torch.LongTensor([len(ex.x_indexed)])
             enc_out,(h,c) = self.enc(embedded, x)
             # [["indexed words"],(h,c)]
-            beam = Beam(2)
+            beam = Beam(5)
             beam.add([[SOS_SYMBOL],(h.unsqueeze(0),c.unsqueeze(0))],0)
             while True:
-                tmp = Beam(2)
+                tmp = Beam(5)
                 changed = False
                 cur_beam = beam.get_elts_and_scores()
                 for (ele, score) in cur_beam:
-                    if ele[0][-1] == EOS_SYMBOL:
+                    if ele[0][-1] == EOS_SYMBOL or len(ele[0])> 65:
                         tmp.add(ele,score)
                     else:
                         changed = True
                         emb = self.dec_emb(torch.LongTensor([[self.out_ind.index_of(ele[0][-1])]]))
                         h = ele[1][0]
                         c = ele[1][1]
-                        cell_out, (h,c) = self.dec(emb,h,c,enc_out.squeeze()[:len(ex.x_indexed),:])
-                        val = torch.topk(F.log_softmax(cell_out,dim=1).squeeze(),20)
+                        cell_out, _, (h,c) = self.dec(emb,h,c,torch.LongTensor([1]),enc_out[:len(ex.x_indexed),:])
+                        val = torch.topk(F.log_softmax(cell_out.squeeze()),20)
                         for i in range(20):
                             decoded = ele[0]+[self.out_ind.get_object(val.indices[i].item())]
                             h1 = h.clone().detach()
                             c1 = c.clone().detach()
-                            tmp.add([decoded,(h1,c1)],(score*len(ele[0])+val.values[i].item())/(len(ele[0])+1))
+                            tmp.add([decoded,(h1,c1)],(score*len(ele[0])+val.values[i].item())/(len(ele[0])))
                 if not changed:
                     break
                 beam = tmp
@@ -282,7 +282,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
     encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
     encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
     decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
-    decoder = RNNDecoder(dec_embed_size, dec_hidden_size, len(output_indexer))
+    decoder = RNNDecoderAttention(dec_embed_size, dec_hidden_size, len(output_indexer))
 
 
     LR = 0.001
@@ -293,7 +293,7 @@ def train_model_encdec(train_data: List[Example], test_data: List[Example], inpu
                               lr=LR)
 
     teacher_forcing = True
-    NUM_EPOCHS = 40
+    NUM_EPOCHS = 60
     loss_fn = torch.nn.CrossEntropyLoss()
     for k in range(NUM_EPOCHS):
         loss_epoch = []
@@ -339,7 +339,7 @@ def train_model_encdec_fast(train_data: List[Example], test_data: List[Example],
     encoder_embedding = EmbeddingLayer(enc_embed_size, len(input_indexer), dropout_ratio)
     encoder = RNNEncoder(enc_embed_size, enc_hidden_size, False)
     decoder_embedding = EmbeddingLayer(dec_embed_size, len(output_indexer), dropout_ratio)
-    decoder = RNNDecoderFast(dec_embed_size, dec_hidden_size, len(output_indexer))
+    decoder = RNNDecoderAttentionFast(dec_embed_size, dec_hidden_size, len(output_indexer))
 
 
     LR = 0.001
@@ -349,7 +349,7 @@ def train_model_encdec_fast(train_data: List[Example], test_data: List[Example],
                               {'params':encoder_embedding.parameters()}],
                               lr=LR)
 
-    NUM_EPOCHS = 10
+    NUM_EPOCHS = 60
     for k in range(NUM_EPOCHS):
         loss_epoch = []
         encoder_embedding.train()
@@ -377,7 +377,7 @@ def train_model_encdec_fast(train_data: List[Example], test_data: List[Example],
     return Seq2SeqSemanticParser(encoder_embedding,encoder,input_indexer,decoder_embedding, decoder, output_indexer)
 
 
-def evaluate(test_data: List[Example], decoder, example_freq=50, print_output=True, outfile=None):
+def evaluate(test_data: List[Example], decoder, example_freq=5, print_output=True, outfile=None):
     """
     Evaluates decoder against the data in test_data (could be dev data or test data). Prints some output
     every example_freq examples. Writes predictions to outfile if defined. Evaluation requires
@@ -401,6 +401,31 @@ def evaluate(test_data: List[Example], decoder, example_freq=50, print_output=Tr
                 out.write(ex.x + "\t" + " ".join(selected_derivs[i].y_toks) + "\n")
         out.close()
 
+def evaluate_beam(test_data: List[Example], decoder, example_freq=5, print_output=True, outfile=None):
+    """
+    Evaluates decoder against the data in test_data (could be dev data or test data). Prints some output
+    every example_freq examples. Writes predictions to outfile if defined. Evaluation requires
+    executing the model's predictions against the knowledge base. We pick the highest-scoring derivation for each
+    example with a valid denotation (if you've provided more than one).
+    :param test_data:
+    :param decoder:
+    :param example_freq: How often to print output
+    :param print_output:
+    :param outfile:
+    :return:
+    """
+    e = GeoqueryDomain()
+    pred_derivations = decoder.decode_beam(test_data)
+    selected_derivs, denotation_correct = e.compare_answers([ex.y for ex in test_data], pred_derivations)
+    print_evaluation_results(test_data, selected_derivs, denotation_correct, example_freq, print_output)
+    # Writes to the output file if needed
+    if outfile is not None:
+        with open(outfile, "w") as out:
+            for i, ex in enumerate(test_data):
+                out.write(ex.x + "\t" + " ".join(selected_derivs[i].y_toks) + "\n")
+        out.close()
+
+
 
 if __name__ == '__main__':
     args = _parse_args()
@@ -408,7 +433,7 @@ if __name__ == '__main__':
     random.seed(args.seed)
     np.random.seed(args.seed)
     # Load the training and test data
-
+    torch.manual_seed(args.seed)
     train, dev, test = load_datasets(args.train_path, args.dev_path, args.test_path, domain=args.domain)
     train_data_indexed, dev_data_indexed, test_data_indexed, input_indexer, output_indexer = index_datasets(train, dev, test, args.decoder_len_limit)
     print("%i train exs, %i dev exs, %i input types, %i output types" % (len(train_data_indexed), len(dev_data_indexed), len(input_indexer), len(output_indexer)))
@@ -421,9 +446,11 @@ if __name__ == '__main__':
         decoder = NearestNeighborSemanticParser(train_data_indexed)
         evaluate(dev_data_indexed, decoder)
     else:
-        decoder = train_model_encdec(train_data_indexed, dev_data_indexed, input_indexer, output_indexer, args)
+        decoder = train_model_encdec_fast(train_data_indexed, dev_data_indexed, input_indexer, output_indexer, args)
         evaluate(dev_data_indexed, decoder)
+        #evaluate(test_data_indexed, decoder)
+        evaluate_beam(dev_data_indexed, decoder)
     print("=======FINAL EVALUATION ON BLIND TEST=======")
-    #evaluate(test_data_indexed, decoder, print_output=False, outfile="geo_test_output.tsv")
+    evaluate_beam(test_data_indexed, decoder, print_output=False, outfile="geo_test_output.tsv")
 
 
